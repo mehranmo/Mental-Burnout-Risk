@@ -182,39 +182,47 @@ with predict_tab:
             }])
             base_p = proba_for_row(pipe, current)
             base_pred = int(base_p >= st.session_state.threshold)
-            desired_pred = 1 - base_pred
-            actionable = [c for c in ["sleep_hours","work_hours","hours_social"] if c in model["num_cols"]]
-            if len(actionable)==0:
-                st.info("No adjustable features available for this model.")
+
+            # required fix: goal depends on target
+            desired_pred = 0 if label_name=="target" else 1
+
+            if base_pred == desired_pred:
+                st.info("You already meet the goal at the current threshold.")
             else:
-                steps = np.arange(-3.0, 3.5, 0.5)
-                best_flip, best_improve = None, None
-                def day_ok(row):
-                    tot = sum(float(row.loc[0,k]) for k in ["sleep_hours","work_hours","hours_social"] if k in row.columns)
-                    return 0 <= tot <= 24
-                for col in actionable:
-                    base_val = float(current.loc[0,col])
-                    for d in steps:
-                        if d==0: continue
-                        trial = current.copy()
-                        trial.loc[0,col] = np.clip(base_val + d, 0, 24)
-                        if not day_ok(trial): continue
-                        p = proba_for_row(pipe, trial)
-                        pred = int(p >= st.session_state.threshold)
-                        change = abs(d)
-                        if pred == desired_pred:
-                            if best_flip is None or change < best_flip["change"]:
-                                best_flip = {"col":col,"d":d,"p":p,"change":change}
-                        else:
-                            improve = (base_p - p) if label_name=="target" else (p - base_p)
-                            if best_improve is None or improve > best_improve["improve"] or (np.isclose(improve,best_improve["improve"]) and change < best_improve["change"]):
-                                best_improve = {"col":col,"d":d,"p":p,"improve":improve,"change":change}
-                if best_flip:
-                    st.success(f"Change {best_flip['col'].replace('_',' ')} by {best_flip['d']:+.1f} h. New probability: {best_flip['p']*100:.1f}% (decision flips).")
-                elif best_improve and best_improve["improve"]>0:
-                    st.info(f"Closest improvement: change {best_improve['col'].replace('_',' ')} by {best_improve['d']:+.1f} h. New probability: {best_improve['p']*100:.1f}%.")
+                actionable = [c for c in ["sleep_hours","work_hours","hours_social"] if c in model["num_cols"]]
+                if len(actionable)==0:
+                    st.info("No adjustable features available for this model.")
                 else:
-                    st.info("No helpful change found within ±3 hours.")
+                    steps = np.arange(-3.0, 3.5, 0.5)
+                    best_flip, best_improve = None, None
+                    def day_ok(row):
+                        tot = sum(float(row.loc[0,k]) for k in ["sleep_hours","work_hours","hours_social"] if k in row.columns)
+                        return 0 <= tot <= 24
+                    for col in actionable:
+                        base_val = float(current.loc[0,col])
+                        for d in steps:
+                            if d==0: continue
+                            trial = current.copy()
+                            trial.loc[0,col] = np.clip(base_val + d, 0, 24)
+                            if not day_ok(trial): continue
+                            p = proba_for_row(pipe, trial)
+                            pred = int(p >= st.session_state.threshold)
+                            change = abs(d)
+                            if pred == desired_pred:
+                                if best_flip is None or change < best_flip["change"]:
+                                    best_flip = {"col":col,"d":d,"p":p,"change":change}
+                            else:
+                                improve = (base_p - p) if label_name=="target" else (p - base_p)
+                                if best_improve is None or improve > best_improve["improve"] or (np.isclose(improve,best_improve["improve"]) and change < best_improve["change"]):
+                                    best_improve = {"col":col,"d":d,"p":p,"improve":improve,"change":change}
+                    if best_flip:
+                        title = "New burnout risk" if label_name=="target" else "New good productivity"
+                        st.success(f"Change {best_flip['col'].replace('_',' ')} by {best_flip['d']:+.1f} h. {title}: {best_flip['p']*100:.1f}% (decision flips).")
+                    elif best_improve and best_improve["improve"]>0:
+                        title = "New burnout risk" if label_name=="target" else "New good productivity"
+                        st.info(f"Closest improvement: change {best_improve['col'].replace('_',' ')} by {best_improve['d']:+.1f} h. {title}: {best_improve['p']*100:.1f}%.")
+                    else:
+                        st.info("No helpful change found within ±3 hours.")
 
 with train_tab:
     src = st.radio("Training data", ["Default","Upload"], horizontal=True, key="train_src")
@@ -465,6 +473,18 @@ with batch_tab:
         up = st.file_uploader("Upload CSV with columns: age, gender, hours_social, sleep_hours, work_hours", type=["csv"], key="batch_csv")
         if up is not None:
             df_in = pd.read_csv(up)
+
+            if "gender" in df_in.columns:
+                df_in["gender"] = df_in["gender"].astype(str).str.strip().str.lower()
+            for c in ["age","hours_social","sleep_hours","work_hours"]:
+                if c in df_in.columns:
+                    df_in[c] = pd.to_numeric(df_in[c], errors="coerce")
+            if "age" in df_in.columns:
+                df_in["age"] = df_in["age"].clip(0,120)
+            for c in ["hours_social","sleep_hours","work_hours"]:
+                if c in df_in.columns:
+                    df_in[c] = df_in[c].clip(0,24)
+
             req = model["num_cols"] + model["cat_cols"]
             missing = [c for c in req if c not in df_in.columns]
             if missing:
